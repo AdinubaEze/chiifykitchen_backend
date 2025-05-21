@@ -30,7 +30,7 @@ class CustomVerifyEmailNotification extends Notification implements ShouldQueue
 
     protected function verificationUrl($notifiable)
     {
-        return config('app.frontend_url').'/auth/verify-email?'.http_build_query([
+        return config('app.url').'/auth/verify-email?'.http_build_query([
             'id' => $notifiable->getKey(),
             'hash' => sha1($notifiable->getEmailForVerification()),
         ]);
