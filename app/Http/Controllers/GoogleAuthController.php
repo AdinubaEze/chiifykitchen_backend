@@ -48,8 +48,10 @@ class GoogleAuthController extends Controller
         try {
             // Check if user exists first
             $user = User::where('email', $payload['email'])->first();
+            $message = "Account created successfully";
 
             if ($user) {
+                $message = "Your have successfully signed in";
                 // User exists - update without changing avatar
                 $user->update([
                     'google_id' => $payload['sub'] ?? $user->google_id,
@@ -60,6 +62,7 @@ class GoogleAuthController extends Controller
                 // New user - create with avatar
                 $user = User::create([
                     'google_id' => $payload['sub'] ?? null,
+                    'role'=>User::ROLE_CUSTOMER,
                     'firstname' => $payload['given_name'] ?? 'Google',
                     'lastname' => $payload['family_name'] ?? 'User',
                     'email' => $payload['email'],
@@ -73,6 +76,7 @@ class GoogleAuthController extends Controller
             $token = JWTAuth::fromUser($user);
 
             return response()->json([
+                'message'=>$message,
                 'access_token' => "Bearer $token",
                 'token_type' => 'bearer',
                 'status' => "success",
@@ -83,6 +87,7 @@ class GoogleAuthController extends Controller
                     'lastname' => $user->lastname,
                     'email' => $user->email,
                     'avatar' => $user->avatar, // Will be null for existing users unless they had one
+                    'role' =>$user->role,
                     'is_google_user' => true, 
                 ]
             ]);

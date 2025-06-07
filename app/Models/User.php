@@ -19,6 +19,14 @@ class User extends Authenticatable implements JWTSubject,MustVerifyEmail,CanRese
 {
     use HasApiTokens, HasFactory, Notifiable,MustVerifyEmailTrait,CanResetPassword;
 
+
+    public const ROLE_CUSTOMER = 'customer';
+    public const ROLE_ADMIN = 'admin';
+    public const ROLE_STAFF = 'staff';
+
+    public const STATUS_ACTIVE = 'active';
+    public const STATUS_SUSPENDED = 'suspended';
+
     /**
      * The attributes that are mass assignable.
      *
@@ -33,6 +41,8 @@ class User extends Authenticatable implements JWTSubject,MustVerifyEmail,CanRese
         'lastname',
         'google_id', 
         'avatar', 
+        'role',
+        'status',
     ];
 
     /**
@@ -53,7 +63,52 @@ class User extends Authenticatable implements JWTSubject,MustVerifyEmail,CanRese
     protected $casts = [
         'email_verified_at' => 'datetime',
         'password' => 'hashed',
+        'role' => 'string',
     ];
+
+     /**
+     * Get the available role values.
+     *
+     * @return array
+     */
+    public static function getAvailableRoles()
+    {
+        return [
+            self::ROLE_CUSTOMER,
+            self::ROLE_ADMIN,
+            self::ROLE_STAFF,
+        ];
+    }
+
+    /**
+     * Set the role attribute.
+     *
+     * @param  string  $value
+     * @return void
+     */
+    public function setRoleAttribute($value)
+    {
+        if (!in_array($value, self::getAvailableRoles())) {
+            throw new \InvalidArgumentException("Invalid role");
+        }
+        $this->attributes['role'] = $value;
+    }
+
+    public static function getAvailableStatuses()
+    {
+        return [
+            self::STATUS_ACTIVE,
+            self::STATUS_SUSPENDED,
+        ];
+    }
+    
+    public function setStatusAttribute($value)
+    {
+        if (!in_array($value, self::getAvailableStatuses())) {
+            throw new \InvalidArgumentException("Invalid status");
+        }
+        $this->attributes['status'] = $value;
+    }
 
 
       public function addresses()
@@ -97,5 +152,9 @@ class User extends Authenticatable implements JWTSubject,MustVerifyEmail,CanRese
          $this->notify(new CustomVerifyEmailNotification);
      }
      
+    public function orders()
+    {
+        return $this->hasMany(\App\Models\Order::class);
+    }
       
 }

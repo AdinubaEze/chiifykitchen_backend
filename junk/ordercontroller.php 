@@ -1,0 +1,116 @@
+<?php
+  public function update(UpdateOrderRequest $request, Order $order)
+    {
+        DB::beginTransaction();
+    
+        try {
+            // Validate request data
+            $updates = $request->validated();
+            
+            // Check if user is authorized to update this order
+            if ($request->user()->role !== User::ROLE_ADMIN && $order->user_id !== $request->user()->id) {
+                return response()->json([
+                    'status' => 'fail',
+                    'message' => 'Unauthorized to update this order',
+                    'data' => null
+                ], 403);
+            }
+    
+            // Track admin who made the update
+            if ($request->user()->role === User::ROLE_ADMIN) {
+                $updates['admin_id'] = $request->user()->id;
+            }
+    
+            // Validate status transition
+            if (isset($updates['status'])) {
+                if (!$this->isValidStatusTransition($order->status, $updates['status'])) {
+                    return response()->json([
+                        'status' => 'fail',
+                        'message' => 'Invalid status transition',
+                        'data' => [
+                            'current_status' => $order->status,
+                            'attempted_status' => $updates['status']
+                        ]
+                    ], 422);
+                }
+            }
+    
+            // Update the order
+            $updated = $order->update($updates);
+            
+            if (!$updated) {
+                throw new \Exception('Failed to update order record');
+            }
+    
+            // Handle table status if order is completed and was dine-in
+            if ($order->status === Order::STATUS_COMPLETED && $order->table_id) {
+                $tableUpdated = Table::where('id', $order->table_id)
+                    ->update(['status' => Table::STATUS_AVAILABLE]);
+                
+                if (!$tableUpdated) {
+                    throw new \Exception('Failed to update table status');
+                }
+            }
+    
+            DB::commit();
+    
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Order updated successfully',
+                'data' => new OrderResource($order->fresh()->load(['user', 'address', 'table', 'items.product']))
+            ]);
+    
+        } catch (\Illuminate\Database\QueryException $e) {
+            DB::rollBack();
+            Log::error('Database error during order update', [
+                'order_id' => $order->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Database error occurred',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+                'data' => null
+            ], 500);
+    
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Order update failed', [
+                'order_id' => $order->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Order update failed',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+                'data' => null
+            ], 500);
+        }
+    }
+
+    /**
+     * Validate order status transitions
+     */
+    protected function isValidStatusTransition(string $currentStatus, string $newStatus): bool
+    {
+        $validTransitions = [
+            Order::STATUS_PENDING => [
+                Order::STATUS_PROCESSING,
+                Order::STATUS_CANCELLED,
+                Order::STATUS_COMPLETED,
+            ],
+            Order::STATUS_PROCESSING => [
+                Order::STATUS_CANCELLED,
+                Order::STATUS_DELIVERED,
+            ],
+            // Once completed or cancelled, no further changes allowed
+            // Order::STATUS_COMPLETED => [],
+            // Order::STATUS_CANCELLED => []
+        ];
+    
+        return in_array($newStatus, $validTransitions[$currentStatus] ?? []);
+    }

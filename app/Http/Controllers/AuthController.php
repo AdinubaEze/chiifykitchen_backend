@@ -29,6 +29,7 @@ class AuthController extends Controller
             'email' => 'required|string|email|max:100|unique:users',
             'phone' => 'required|string|max:20',
             'password' => 'required|string|confirmed|min:6',
+            'role' => 'required|string|in:customer,admin,staff',
         ]);
     
         if ($validator->fails()) {
@@ -49,13 +50,14 @@ class AuthController extends Controller
         DB::beginTransaction();
     
         try {
-            // Create user
+            // Create user with default role 'customer' if not provided
             $user = User::create([
                 'firstname' => $request->firstname,
                 'lastname' => $request->lastname,
                 'email' => $request->email,
                 'phone' => $request->phone,
                 'password' => Hash::make($request->password),
+                'role' => $request->role ?? User::ROLE_CUSTOMER, // Set default role
             ]);
     
             // Attempt to send verification email
@@ -103,7 +105,7 @@ class AuthController extends Controller
             ]);
     
             return response()->json([
-                'message' => 'Registration failed',
+                'message' => "Registration failed because ".$e->getMessage(),
                 'status' => 'fail',
                 'error' => $e->getMessage()
             ], 500);
@@ -264,6 +266,7 @@ class AuthController extends Controller
             'email' => $user->email,
             'phone' => $user->phone,
             'avatar' => $user->avatar,
+            'role' => $user->role,
         ]);
     }
     public function uploadAvatar(Request $request)
@@ -403,37 +406,7 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             Log::error("Failed to delete avatar file: ".$e->getMessage());
         }
-    }
-
-
-    /**
-     * Helper method to delete avatar file from storage
-     */
-    // protected function deleteAvatarFile($avatarPath)
-    // {
-    //     try {
-    //         // For Google avatars (full URLs), we don't delete anything
-    //         if (filter_var($avatarPath, FILTER_VALIDATE_URL)) {
-    //             return;
-    //         }
-    
-    //         // For local avatars stored with /storage prefix
-    //         if (str_starts_with($avatarPath, '/storage/')) {
-    //             $relativePath = str_replace('/storage/', '', $avatarPath);
-    //             Storage::disk('public')->delete($relativePath);
-    //         }
-    //         // For local avatars stored with relative path (backward compatibility)
-    //         else {
-    //             Storage::disk('public')->delete($avatarPath);
-    //         }
-    //     } catch (\Exception $e) {
-    //         Log::error('Failed to delete avatar file', [
-    //             'path' => $avatarPath,
-    //             'error' => $e->getMessage()
-    //         ]);
-    //         throw $e;
-    //     }
-    // }
+    } 
 
     protected function respondWithToken($token,$message = "Login successful")
     {
@@ -452,6 +425,7 @@ class AuthController extends Controller
                 'email' => $user->email,
                 'phone' => $user->phone,
                 'avatar' => $user->avatar,
+                'role' => $user->role,  
             ]
         ]);
     }

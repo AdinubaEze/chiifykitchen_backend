@@ -1,0 +1,306 @@
+<?php
+
+namespace App\Http\Controllers;
+ 
+use App\Http\Requests\UpdateOrderRequest;
+use App\Http\Resources\OrderResource;
+use App\Models\DeliveryFeeSetting;
+use App\Models\Order;
+use App\Models\Product;
+use App\Models\Table;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;    
+use Illuminate\Validation\Rule; 
+
+class OrderController extends Controller
+{
+    public function __construct()
+    {
+        $this->middleware('auth:api')->except(['index','show']);
+        // $this->middleware('role:admin')->only(['index', 'update']);
+    }
+
+    public function index(Request $request)
+    {
+        try { 
+            $query = Order::with(['user', 'address', 'table', 'items.product']);
+    
+            // Customer can only see their own orders
+            if ($request->user()->role === User::ROLE_CUSTOMER) {
+                $query->where('user_id', $request->user()->id);
+            } 
+            
+            if ($request->has('status')) {
+                $status = $request->input('status');
+                if (in_array($status, [
+                    Order::STATUS_PENDING,
+                    Order::STATUS_PROCESSING,
+                    Order::STATUS_COMPLETED,
+                    Order::STATUS_CANCELLED,
+                    Order::STATUS_DELIVERED,
+                ])) {
+                    $query->where('status', $status);
+                }
+            }
+    
+            // Search functionality
+            if ($request->has('search')) {
+                $search = $request->search;
+                $query->where(function($q) use ($search) {
+                    $q->where('order_id', 'like', "%{$search}%")
+                      ->orWhereHas('user', function($q) use ($search) {
+                          $q->where('firstname', 'like', "%{$search}%")
+                            ->orWhere('lastname', 'like', "%{$search}%");
+                      });
+                });
+            }
+    
+            // Pagination with sensible defaults
+            $perPage = min($request->per_page ?? 15, 100); // Max 100 items per page
+            $orders = $query->latest()->paginate($perPage);
+    
+            return response()->json([
+                'status' => 'success',
+                'data' => $orders,
+            ]);
+    
+        } catch (\Exception $e) {
+            Log::error('Order index failed: ' . $e->getMessage(), [
+                'request' => $request->all(),
+                'user_id' => $request->user()->id ?? null,
+                'error' => $e->getTraceAsString()
+            ]);
+    
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to retrieve orders',
+                'error' => config('app.debug') ? $e->getMessage() : null
+            ], 500);
+        }
+    }
+
+    public function store(Request $request)
+{
+    $validator = Validator::make($request->all(), [
+        'address_id' => ['nullable', 'exists:addresses,id,user_id,'.$request->user()->id],
+        'table_id' => ['nullable', 'exists:tables,id'],
+        'payment_method' => ['required', 'string'],
+        'delivery_method' => ['required', Rule::in(Order::getDeliveryMethodOptions())],
+        'products' => ['required', 'array', 'min:1'],
+        'products.*.id' => ['required', 'exists:products,id'],
+        'products.*.quantity' => ['required', 'integer', 'min:1'],
+    ]);
+
+    // Custom validation rules
+    $validator->after(function ($validator) use ($request) {
+        $deliveryMethod = $request->input('delivery_method');
+        
+        // Address validation for delivery/courier
+        if (in_array($deliveryMethod, [Order::DELIVERY_METHOD_DELIVERY, Order::DELIVERY_METHOD_COURIER])) {
+            if (!$request->input('address_id')) {
+                $validator->errors()->add('address_id', 'Address is required for delivery or courier orders.');
+            }
+        }
+
+        // Table validation for dine-in
+        if ($deliveryMethod === Order::DELIVERY_METHOD_DINE_IN && !$request->input('table_id')) {
+            $validator->errors()->add('table_id', 'Table ID is required for dine-in orders.');
+        }
+
+        // Payment method validation - cash only allowed for dine-in or pickup
+        if (!in_array($deliveryMethod, [Order::DELIVERY_METHOD_DINE_IN, Order::DELIVERY_METHOD_PICKUP]) && 
+            $request->input('payment_method') === 'cash') {
+            $validator->errors()->add('payment_method', 'Cash payment is only allowed for dine-in or pickup orders.');
+        }
+    });
+
+    if ($validator->fails()) {
+        $errors = [];
+        foreach ($validator->errors()->messages() as $field => $messages) {
+            $errors[$field] = $messages[0];
+        }
+
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Validation failed',
+            'errors' => $errors
+        ], 422);
+    }
+
+    DB::beginTransaction();
+
+    try {
+        $products = Product::whereIn('id', collect($request->products)->pluck('id'))->get();
+        
+        $subtotal = 0;
+        $items = [];
+        
+        foreach ($request->products as $item) {
+            $product = $products->firstWhere('id', $item['id']);
+            $price = $product->discounted_price ?? $product->price;
+            $subtotal += $price * $item['quantity'];
+            
+            $items[] = [
+                'product_id' => $product->id,
+                'quantity' => $item['quantity'],
+                'price' => $product->price,
+                'discounted_price' => $product->discounted_price,
+            ];
+        }
+
+        $deliveryFee = 0;
+        if (in_array($request->delivery_method, [Order::DELIVERY_METHOD_DELIVERY, Order::DELIVERY_METHOD_COURIER])) {
+            $deliveryFee = DeliveryFeeSetting::getFeeForType($request->delivery_method);
+        }
+        $total = $subtotal + $deliveryFee;
+
+        $order = Order::create([
+            'order_id' => 'ORD-' . Str::upper(Str::random(8)),
+            'user_id' => $request->user()->id,
+            'address_id' => $request->address_id,
+            'table_id' => $request->table_id,
+            'subtotal' => $subtotal,
+            'delivery_fee' => $deliveryFee,
+            'total' => $total,
+            'payment_method' => $request->payment_method,
+            'delivery_method' => $request->delivery_method,
+            'payment_status' => $request->payment_method === 'cash' 
+                ? Order::PAYMENT_STATUS_PENDING 
+                : Order::PAYMENT_STATUS_UNPAID,
+            'status' => Order::STATUS_PENDING,
+        ]);
+
+        $order->items()->createMany($items);
+
+        if ($request->table_id) {
+            Table::where('id', $request->table_id)->update(['status' => Table::STATUS_OCCUPIED]);
+        }
+
+        DB::commit();
+
+        return response()->json([
+            'status' => 'success',
+            'message'=>'The order has been created successfully.',
+            'data' => new OrderResource($order->load(['user', 'address', 'table', 'items.product']))
+        ]);
+    } catch (\Exception $e) {
+        DB::rollBack();
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Order creation failed',
+            'error' => $e->getMessage()
+        ], 500);
+    }
+}
+
+    public function show($orderId)
+    {
+        try {
+            // First check if order exists
+            $order = Order::with(['user', 'address', 'table', 'items.product'])
+                         ->find($orderId);
+    
+            if (!$order) {
+                return response()->json([
+                    'status' => 'fail',
+                    'message' => 'Order not found',
+                    'error' => 'The requested order does not exist'
+                ], 404);
+            }
+    
+            // Then check authorization
+            $this->authorize('view', $order);
+    
+            return response()->json([
+                'status' => 'success',
+                'data' => new OrderResource($order)
+            ]);
+    
+        } catch (\Illuminate\Auth\Access\AuthorizationException $e) {
+            return response()->json([
+                'status' => 'fail',
+                'message' => 'Unauthorized to view this order',
+                'error' => 'You do not have permission to view this order'
+            ], 403);
+    
+        } catch (\Exception $e) {
+            Log::error('Order retrieval failed: ' . $e->getMessage(), [
+                'order_id' => $orderId,
+                'user_id' => auth()->id(),
+                'error' => $e->getTraceAsString()
+            ]);
+    
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to retrieve order details',
+                'error' => config('app.debug') ? $e->getMessage() : null
+            ], 500);
+        }
+    }
+
+
+    public function update(UpdateOrderRequest $request, Order $order)
+    {
+        DB::beginTransaction();
+    
+        try {
+            $updates = $request->validated();
+            
+            // Track if admin is updating the order
+            if ($request->user()->role === User::ROLE_ADMIN) {
+                $updates['admin_id'] = $request->user()->id;
+            }
+    
+            // If order is being marked as completed and payment was cash
+            if (isset($updates['status']) && $updates['status'] === Order::STATUS_COMPLETED && 
+                $order->payment_method === Order::PAYMENT_METHOD_CASH) {
+                $updates['payment_status'] = Order::PAYMENT_STATUS_PAID;
+            }
+    
+            // If order is being cancelled and was paid, mark for refund
+            if (isset($updates['status']) && $updates['status'] === Order::STATUS_CANCELLED && 
+                $order->payment_status === Order::PAYMENT_STATUS_PAID) {
+                $updates['payment_status'] = Order::PAYMENT_STATUS_REFUNDED;
+            }
+    
+            $order->update($updates);
+    
+            // If dine-in order is completed, mark table as available
+            if ($order->status === Order::STATUS_COMPLETED && $order->table_id) {
+                Table::where('id', $order->table_id)->update(['status' => Table::STATUS_AVAILABLE]);
+            }
+    
+            DB::commit();
+    
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Order updated successfully',
+                'data' => new OrderResource($order->fresh()->load(['user', 'address', 'table', 'items.product']))
+            ]);
+    
+        } catch (\Exception $e) {
+            DB::rollBack();
+            
+            Log::error('Order update failed', [
+                'order_id' => $order->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+    
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Order update failed',
+                'error' => config('app.debug') ? $e->getMessage() : null
+            ], 500);
+        }
+    }
+
+
+
+
+  
+}
