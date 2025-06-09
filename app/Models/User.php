@@ -127,6 +127,10 @@ class User extends Authenticatable implements JWTSubject,MustVerifyEmail,CanRese
     {
         return [];
     }
+    public function getFullnameAttribute()
+    {
+        return "{$this->firstname} {$this->lastname}";
+    }
 
     public function getAvatarAttribute($value)
      {

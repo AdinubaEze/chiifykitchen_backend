@@ -14,7 +14,7 @@ return new class extends Migration
             $table->string('payment_id')->unique();
             $table->decimal('amount', 10, 2);
             $table->enum('payment_method', ['card', 'paystack', 'flutterwave', 'cash']);
-            $table->enum('status', ['pending', 'successful', 'failed', 'refunded']);
+            $table->enum('status', ['pending', 'paid','unpaid', 'failed', 'refunded']);
             $table->string('reference')->nullable();
             $table->json('metadata')->nullable();
             $table->timestamp('verified_at')->nullable();

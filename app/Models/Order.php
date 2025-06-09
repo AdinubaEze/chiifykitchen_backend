@@ -112,7 +112,10 @@ class Order extends Model
             ->withPivot(['quantity', 'price', 'discounted_price'])
             ->withTimestamps();
     }
-
+     public function payment()
+    {
+        return $this->hasOne(Payment::class);
+    }
     public function isPending()
     {
         return $this->status === self::STATUS_PENDING;

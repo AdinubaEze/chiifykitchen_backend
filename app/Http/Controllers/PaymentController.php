@@ -19,7 +19,7 @@ class PaymentController extends Controller
     public function index(Request $request)
     {
         try {
-            $query = Payment::with(['order', 'order.user'])
+            $query = Payment::with(['order', 'order.user','order.items','order.items.product'])
                 ->latest();
 
             if ($request->has('search')) {
@@ -91,7 +91,7 @@ class PaymentController extends Controller
         }
     }
 
-    public function update(Request $request, Payment $payment)
+    /* public function update(Request $request, Payment $payment)
     {
         $request->validate([
             'status' => 'required|in:pending,successful,failed,refunded',
@@ -116,6 +116,63 @@ class PaymentController extends Controller
 
             DB::commit();
 
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Payment updated successfully',
+                'data' => $payment
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Failed to update payment: ' . $e->getMessage());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to update payment'
+            ], 500);
+        }
+    } */
+ 
+    public function update(Request $request, Payment $payment)
+    {
+        $request->validate([
+            'status' => 'required|in:pending,successful,failed,refunded',
+            'reference' => 'nullable|string|max:255',
+        ]);
+    
+        DB::beginTransaction();
+    
+        try {
+            $payment->update([
+                'status' => $request->status,
+                'reference' => $request->reference ?? $payment->reference,
+                'verified_at' => $request->status === 'successful' ? now() : null
+            ]);
+    
+            // Update order status based on payment status
+            switch ($request->status) {
+                case Payment::STATUS_SUCCESSFUL:
+                    $payment->order->update([
+                        'payment_status' => Order::PAYMENT_STATUS_PAID,
+                        'status' => Order::STATUS_PROCESSING // Move to processing after payment
+                    ]);
+                    break;
+                    
+                case Payment::STATUS_FAILED:
+                    $payment->order->update([
+                        'payment_status' => Order::PAYMENT_STATUS_FAILED,
+                        'status' => Order::STATUS_PENDING // Keep as pending for retry
+                    ]);
+                    break;
+                    
+                case Payment::STATUS_REFUNDED:
+                    $payment->order->update([
+                        'payment_status' => Order::PAYMENT_STATUS_REFUNDED,
+                        'status' => Order::STATUS_CANCELLED
+                    ]);
+                    break;
+            }
+    
+            DB::commit();
+    
             return response()->json([
                 'status' => 'success',
                 'message' => 'Payment updated successfully',

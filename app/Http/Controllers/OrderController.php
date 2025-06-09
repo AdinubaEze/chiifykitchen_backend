@@ -6,6 +6,7 @@ use App\Http\Requests\UpdateOrderRequest;
 use App\Http\Resources\OrderResource;
 use App\Models\DeliveryFeeSetting;
 use App\Models\Order;
+use App\Models\Payment;
 use App\Models\Product;
 use App\Models\Table;
 use App\Models\User;
@@ -14,7 +15,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;    
-use Illuminate\Validation\Rule; 
+use Illuminate\Validation\Rule;  
+
 
 class OrderController extends Controller
 {
@@ -22,7 +24,7 @@ class OrderController extends Controller
     {
         $this->middleware('auth:api')->except(['index','show']);
         // $this->middleware('role:admin')->only(['index', 'update']);
-    }
+    } 
 
     public function index(Request $request)
     {
@@ -84,118 +86,134 @@ class OrderController extends Controller
     }
 
     public function store(Request $request)
-{
-    $validator = Validator::make($request->all(), [
-        'address_id' => ['nullable', 'exists:addresses,id,user_id,'.$request->user()->id],
-        'table_id' => ['nullable', 'exists:tables,id'],
-        'payment_method' => ['required', 'string'],
-        'delivery_method' => ['required', Rule::in(Order::getDeliveryMethodOptions())],
-        'products' => ['required', 'array', 'min:1'],
-        'products.*.id' => ['required', 'exists:products,id'],
-        'products.*.quantity' => ['required', 'integer', 'min:1'],
-    ]);
-
-    // Custom validation rules
-    $validator->after(function ($validator) use ($request) {
-        $deliveryMethod = $request->input('delivery_method');
-        
-        // Address validation for delivery/courier
-        if (in_array($deliveryMethod, [Order::DELIVERY_METHOD_DELIVERY, Order::DELIVERY_METHOD_COURIER])) {
-            if (!$request->input('address_id')) {
-                $validator->errors()->add('address_id', 'Address is required for delivery or courier orders.');
-            }
-        }
-
-        // Table validation for dine-in
-        if ($deliveryMethod === Order::DELIVERY_METHOD_DINE_IN && !$request->input('table_id')) {
-            $validator->errors()->add('table_id', 'Table ID is required for dine-in orders.');
-        }
-
-        // Payment method validation - cash only allowed for dine-in or pickup
-        if (!in_array($deliveryMethod, [Order::DELIVERY_METHOD_DINE_IN, Order::DELIVERY_METHOD_PICKUP]) && 
-            $request->input('payment_method') === 'cash') {
-            $validator->errors()->add('payment_method', 'Cash payment is only allowed for dine-in or pickup orders.');
-        }
-    });
-
-    if ($validator->fails()) {
-        $errors = [];
-        foreach ($validator->errors()->messages() as $field => $messages) {
-            $errors[$field] = $messages[0];
-        }
-
-        return response()->json([
-            'status' => 'error',
-            'message' => 'Validation failed',
-            'errors' => $errors
-        ], 422);
-    }
-
-    DB::beginTransaction();
-
-    try {
-        $products = Product::whereIn('id', collect($request->products)->pluck('id'))->get();
-        
-        $subtotal = 0;
-        $items = [];
-        
-        foreach ($request->products as $item) {
-            $product = $products->firstWhere('id', $item['id']);
-            $price = $product->discounted_price ?? $product->price;
-            $subtotal += $price * $item['quantity'];
+    {
+        $validator = Validator::make($request->all(), [
+            'address_id' => ['nullable', 'exists:addresses,id,user_id,'.$request->user()->id],
+            'table_id' => ['nullable', 'exists:tables,id'],
+            'payment_method' => ['required', 'string'],
+            'delivery_method' => ['required', Rule::in(Order::getDeliveryMethodOptions())],
+            'products' => ['required', 'array', 'min:1'],
+            'products.*.id' => ['required', 'exists:products,id'],
+            'products.*.quantity' => ['required', 'integer', 'min:1'],
+        ]);
+    
+        // Custom validation rules
+        $validator->after(function ($validator) use ($request) {
+            $deliveryMethod = $request->input('delivery_method');
             
-            $items[] = [
-                'product_id' => $product->id,
-                'quantity' => $item['quantity'],
-                'price' => $product->price,
-                'discounted_price' => $product->discounted_price,
-            ];
+            // Address validation for delivery/courier
+            if (in_array($deliveryMethod, [Order::DELIVERY_METHOD_DELIVERY, Order::DELIVERY_METHOD_COURIER])) {
+                if (!$request->input('address_id')) {
+                    $validator->errors()->add('address_id', 'Address is required for delivery or courier orders.');
+                }
+            }
+    
+            // Table validation for dine-in
+            if ($deliveryMethod === Order::DELIVERY_METHOD_DINE_IN && !$request->input('table_id')) {
+                $validator->errors()->add('table_id', 'Table ID is required for dine-in orders.');
+            }
+    
+            // Payment method validation - cash only allowed for dine-in or pickup
+            if (!in_array($deliveryMethod, [Order::DELIVERY_METHOD_DINE_IN, Order::DELIVERY_METHOD_PICKUP]) && 
+                $request->input('payment_method') === 'cash') {
+                $validator->errors()->add('payment_method', 'Cash payment is only allowed for dine-in or pickup orders.');
+            }
+        });
+    
+        if ($validator->fails()) {
+            $errors = [];
+            foreach ($validator->errors()->messages() as $field => $messages) {
+                $errors[$field] = $messages[0];
+            }
+    
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $errors
+            ], 422);
         }
+    
+        DB::beginTransaction();
+    
+        try {
+            $products = Product::whereIn('id', collect($request->products)->pluck('id'))->get();
+            
+            $subtotal = 0;
+            $items = [];
+            
+            foreach ($request->products as $item) {
+                $product = $products->firstWhere('id', $item['id']);
+                $price = $product->discounted_price ?? $product->price;
+                $subtotal += $price * $item['quantity'];
+                
+                $items[] = [
+                    'product_id' => $product->id,
+                    'quantity' => $item['quantity'],
+                    'price' => $product->price,
+                    'discounted_price' => $product->discounted_price,
+                ];
+            }
+    
+            $deliveryFee = 0;
+            if (in_array($request->delivery_method, [Order::DELIVERY_METHOD_DELIVERY, Order::DELIVERY_METHOD_COURIER])) {
+                $deliveryFee = DeliveryFeeSetting::getFeeForType($request->delivery_method);
+            }
+            $total = $subtotal + $deliveryFee;
+    
+            $order = Order::create([
+                'order_id' => 'ORD-' . Str::upper(Str::random(8)),
+                'user_id' => $request->user()->id,
+                'address_id' => $request->address_id,
+                'table_id' => $request->table_id,
+                'subtotal' => $subtotal,
+                'delivery_fee' => $deliveryFee,
+                'total' => $total,
+                'payment_method' => $request->payment_method,
+                'delivery_method' => $request->delivery_method,
+                'payment_status' => $request->payment_method === 'cash' 
+                    ? Order::PAYMENT_STATUS_PENDING 
+                    : Order::PAYMENT_STATUS_UNPAID,
+                'status' => Order::STATUS_PENDING,
+            ]);
+    
+            $order->items()->createMany($items);
 
-        $deliveryFee = 0;
-        if (in_array($request->delivery_method, [Order::DELIVERY_METHOD_DELIVERY, Order::DELIVERY_METHOD_COURIER])) {
-            $deliveryFee = DeliveryFeeSetting::getFeeForType($request->delivery_method);
+
+            // Automatically create payment record for non-cash payments
+            // $payment = null;
+            // if ($request->payment_method !== 'cash') {
+                $payment = Payment::create([
+                    'order_id' => $order->id,
+                    'payment_id' => 'PAY-' . strtoupper(uniqid()),
+                    'amount' => $total,
+                    'payment_method' => $request->payment_method,
+                    'status' => $request->payment_method === 'cash' 
+                    ? Order::PAYMENT_STATUS_PENDING 
+                    : Order::PAYMENT_STATUS_UNPAID,
+                ]);
+            // }
+    
+            if ($request->table_id) {
+                Table::where('id', $request->table_id)->update(['status' => Table::STATUS_OCCUPIED]);
+            }
+    
+            DB::commit();
+    
+            return response()->json([
+                'status' => 'success',
+                'message'=>'The order has been created successfully.',
+                'data' => new OrderResource($order->load(['user', 'address', 'table', 'items.product'])),
+                'payment'=>$payment
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Order creation failed',
+                'error' => $e->getMessage()
+            ], 500);
         }
-        $total = $subtotal + $deliveryFee;
-
-        $order = Order::create([
-            'order_id' => 'ORD-' . Str::upper(Str::random(8)),
-            'user_id' => $request->user()->id,
-            'address_id' => $request->address_id,
-            'table_id' => $request->table_id,
-            'subtotal' => $subtotal,
-            'delivery_fee' => $deliveryFee,
-            'total' => $total,
-            'payment_method' => $request->payment_method,
-            'delivery_method' => $request->delivery_method,
-            'payment_status' => $request->payment_method === 'cash' 
-                ? Order::PAYMENT_STATUS_PENDING 
-                : Order::PAYMENT_STATUS_UNPAID,
-            'status' => Order::STATUS_PENDING,
-        ]);
-
-        $order->items()->createMany($items);
-
-        if ($request->table_id) {
-            Table::where('id', $request->table_id)->update(['status' => Table::STATUS_OCCUPIED]);
-        }
-
-        DB::commit();
-
-        return response()->json([
-            'status' => 'success',
-            'message'=>'The order has been created successfully.',
-            'data' => new OrderResource($order->load(['user', 'address', 'table', 'items.product']))
-        ]);
-    } catch (\Exception $e) {
-        DB::rollBack();
-        return response()->json([
-            'status' => 'error',
-            'message' => 'Order creation failed',
-            'error' => $e->getMessage()
-        ], 500);
     }
-}
 
     public function show($orderId)
     {
@@ -240,13 +258,12 @@ class OrderController extends Controller
                 'error' => config('app.debug') ? $e->getMessage() : null
             ], 500);
         }
-    }
-
-
+    } 
+ 
     public function update(UpdateOrderRequest $request, Order $order)
     {
         DB::beginTransaction();
-    
+        
         try {
             $updates = $request->validated();
             
@@ -255,19 +272,39 @@ class OrderController extends Controller
                 $updates['admin_id'] = $request->user()->id;
             }
     
-            // If order is being marked as completed and payment was cash
-            if (isset($updates['status']) && $updates['status'] === Order::STATUS_COMPLETED && 
-                $order->payment_method === Order::PAYMENT_METHOD_CASH) {
-                $updates['payment_status'] = Order::PAYMENT_STATUS_PAID;
-            }
-    
-            // If order is being cancelled and was paid, mark for refund
-            if (isset($updates['status']) && $updates['status'] === Order::STATUS_CANCELLED && 
-                $order->payment_status === Order::PAYMENT_STATUS_PAID) {
-                $updates['payment_status'] = Order::PAYMENT_STATUS_REFUNDED;
+            // Handle status changes
+            if (isset($updates['status'])) {
+                switch ($updates['status']) {
+                    case Order::STATUS_COMPLETED:
+                        if ($order->payment_method === Order::PAYMENT_METHOD_CASH) {
+                            $updates['payment_status'] = Order::PAYMENT_STATUS_PAID;
+                        }
+                        break;
+                        
+                    case Order::STATUS_CANCELLED:
+                        if ($order->payment_status === Order::PAYMENT_STATUS_PAID) {
+                            $updates['payment_status'] = Order::PAYMENT_STATUS_REFUNDED;
+                            // Update related payment if exists
+                            if ($payment = $order->payment) {
+                                $payment->update(['status' => Payment::STATUS_REFUNDED]);
+                            }
+                        }
+                        break;
+                        
+                    case Order::STATUS_DELIVERED:
+                        // Mark payment as successful if not already
+                        if ($order->payment_status !== Order::PAYMENT_STATUS_PAID && $order->payment) {
+                            $order->payment->update(['status' => Payment::STATUS_SUCCESSFUL]);
+                            $updates['payment_status'] = Order::PAYMENT_STATUS_PAID;
+                        }
+                        break;
+                }
             }
     
             $order->update($updates);
+            if($order->payment){
+                $order->payment->update(['status' => $updates['payment_status']]);
+            }
     
             // If dine-in order is completed, mark table as available
             if ($order->status === Order::STATUS_COMPLETED && $order->table_id) {
@@ -279,12 +316,12 @@ class OrderController extends Controller
             return response()->json([
                 'status' => 'success',
                 'message' => 'Order updated successfully',
-                'data' => new OrderResource($order->fresh()->load(['user', 'address', 'table', 'items.product']))
+                'data' => new OrderResource($order->fresh()->load(['user', 'address', 'table', 'items.product'])),
+                'updates'=>$updates,
             ]);
     
         } catch (\Exception $e) {
             DB::rollBack();
-            
             Log::error('Order update failed', [
                 'order_id' => $order->id,
                 'error' => $e->getMessage(),
@@ -297,10 +334,7 @@ class OrderController extends Controller
                 'error' => config('app.debug') ? $e->getMessage() : null
             ], 500);
         }
-    }
-
-
-
-
+    } 
+ 
   
 }

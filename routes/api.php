@@ -9,14 +9,15 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CategoryController;
+use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DeliveryFeeController;
 use App\Http\Controllers\OrderController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\ProductController;
+use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\TableController;
-use App\Http\Controllers\WelcomeController;   
-
-
+use App\Http\Controllers\WelcomeController;    
+ 
 /*
 |--------------------------------------------------------------------------
 | API Routes
@@ -175,10 +176,25 @@ Route::middleware('auth:api')->group(function () {
 });
  
  
+
+// Admin settings
 Route::group([
-    'middleware'=>'auth:api',
-    'prefix'=>'admin'
-],function(){ 
+    'middleware' => ['auth:api', 'role:admin'],
+    'prefix' => 'admin'
+], function () {
     Route::get('/delivery-fees', [DeliveryFeeController::class, 'index']);
     Route::post('/delivery-fees', [DeliveryFeeController::class, 'update']);
+    Route::get('/settings', [SettingsController::class, 'index']);
+    Route::post('/settings', [SettingsController::class, 'update']);
+    Route::post('/settings/payment-gateways/{id}/toggle', [SettingsController::class, 'togglePaymentGateway']);
+    Route::post('/settings/upload-company-logo', [SettingsController::class, 'uploadCompanyLogo']);
+    Route::post('/settings/upload-gateway-logo/{gatewayId}', [SettingsController::class, 'uploadGatewayLogo']);
+});
+ 
+
+Route::prefix('admin/dashboard')->group(function () {
+    Route::get('/stats', [DashboardController::class, 'stats']);
+    Route::get('/sales-chart', [DashboardController::class, 'salesChart']);
+    Route::get('/top-selling', [DashboardController::class, 'topSellingItems']);
+    Route::get('/recent-orders', [DashboardController::class, 'recentOrders']);
 });

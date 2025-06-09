@@ -3,7 +3,11 @@
 namespace App\Exceptions;
 
 use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
-use Throwable;
+use Throwable; 
+use PHPOpenSourceSaver\JWTAuth\Exceptions\JWTException;
+use PHPOpenSourceSaver\JWTAuth\Exceptions\TokenExpiredException;
+use PHPOpenSourceSaver\JWTAuth\Exceptions\TokenInvalidException;
+use PHPOpenSourceSaver\JWTAuth\Exceptions\TokenBlacklistedException;
 
 class Handler extends ExceptionHandler
 {
@@ -26,5 +30,34 @@ class Handler extends ExceptionHandler
         $this->reportable(function (Throwable $e) {
             //
         });
+    }
+
+    public function render($request, Throwable $exception)
+    {
+        if ($exception instanceof TokenExpiredException) {
+            return response()->json([
+                'message' => 'Token expired',
+                'status' => 'fail',
+                'error' => 'token_expired'
+            ], 401);
+        }
+    
+        if ($exception instanceof TokenInvalidException) {
+            return response()->json([
+                'message' => 'Token invalid',
+                'status' => 'fail',
+                'error' => 'token_invalid'
+            ], 401);
+        }
+    
+        if ($exception instanceof JWTException) {
+            return response()->json([
+                'message' => 'Authorization token not provided',
+                'status' => 'fail',
+                'error' => 'token_absent'
+            ], 401);
+        }
+    
+        return parent::render($request, $exception);
     }
 }
