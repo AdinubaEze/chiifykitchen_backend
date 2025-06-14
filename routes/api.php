@@ -16,7 +16,9 @@ use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\TableController;
-use App\Http\Controllers\WelcomeController;    
+use App\Http\Controllers\WelcomeController;
+use Illuminate\Support\Facades\Mail;
+
  
 /*
 |--------------------------------------------------------------------------
@@ -149,9 +151,7 @@ Route::group([
     // Customer routes
     Route::get('/', [OrderController::class, 'index'])->middleware('role:customer');
     Route::post('/', [OrderController::class, 'store'])->middleware('role:customer');
-    Route::get('/{order}', [OrderController::class, 'show']);
-
-     
+    Route::get('/{order}', [OrderController::class, 'show']); 
     
     Route::middleware(['role:admin'])->group(function () { 
         // Admin routes
@@ -179,16 +179,18 @@ Route::middleware('auth:api')->group(function () {
 
 // Admin settings
 Route::group([
-    'middleware' => ['auth:api', 'role:admin'],
     'prefix' => 'admin'
-], function () {
-    Route::get('/delivery-fees', [DeliveryFeeController::class, 'index']);
-    Route::post('/delivery-fees', [DeliveryFeeController::class, 'update']);
+], function () { 
     Route::get('/settings', [SettingsController::class, 'index']);
-    Route::post('/settings', [SettingsController::class, 'update']);
-    Route::post('/settings/payment-gateways/{id}/toggle', [SettingsController::class, 'togglePaymentGateway']);
-    Route::post('/settings/upload-company-logo', [SettingsController::class, 'uploadCompanyLogo']);
-    Route::post('/settings/upload-gateway-logo/{gatewayId}', [SettingsController::class, 'uploadGatewayLogo']);
+    Route::group([
+        'middleware' => ['auth:api', 'role:admin'],
+    ], function(){
+        Route::post('/settings', [SettingsController::class, 'update']);
+        Route::post('/settings/payment-gateways/{id}/toggle', [SettingsController::class, 'togglePaymentGateway']);
+        Route::post('/settings/upload-company-logo', [SettingsController::class, 'uploadCompanyLogo']);
+        Route::post('/settings/upload-gateway-logo/{gatewayId}', [SettingsController::class, 'uploadGatewayLogo']);
+
+    });
 });
  
 
@@ -197,4 +199,15 @@ Route::prefix('admin/dashboard')->group(function () {
     Route::get('/sales-chart', [DashboardController::class, 'salesChart']);
     Route::get('/top-selling', [DashboardController::class, 'topSellingItems']);
     Route::get('/recent-orders', [DashboardController::class, 'recentOrders']);
+});
+
+Route::get('/test-email', function() {
+    try {
+        Mail::raw('Test email', function($message) {
+            $message->to('emma234eze@gmail.com')->subject('Test Email');
+        });
+        return 'Email sent';
+    } catch (\Exception $e) {
+        return 'Error: '.$e->getMessage();
+    }
 });
