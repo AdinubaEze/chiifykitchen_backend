@@ -11,7 +11,7 @@ class SettingsController extends Controller
 {
     public function __construct()
     {
-        $this->middleware('auth:api');
+        $this->middleware('auth:api')->except(['index']);
         $this->middleware('role:admin')->except(['index']);
     }
 
@@ -55,6 +55,15 @@ class SettingsController extends Controller
              'payment_gateways.*.public_test_key' => 'sometimes|nullable|string',
             'payment_gateways.*.secret_test_key' => 'sometimes|nullable|string',
             'payment_gateways.*.logo' => 'sometimes|nullable|string',
+            'social_media' => 'sometimes|array',
+            'social_media.facebook' => 'sometimes|nullable|url|max:255',
+            'social_media.linkedin' => 'sometimes|nullable|url|max:255',
+            'social_media.tiktok' => 'sometimes|nullable|url|max:255',
+            'social_media.instagram' => 'sometimes|nullable|url|max:255',
+            'social_media.youtube' => 'sometimes|nullable|url|max:255',
+            'social_media.x' => 'sometimes|nullable|url|max:255',
+            'social_media.thread' => 'sometimes|nullable|url|max:255',
+            'social_media.snapchat' => 'sometimes|nullable|url|max:255',
         ]);
 
         

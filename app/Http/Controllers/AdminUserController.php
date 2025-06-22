@@ -56,6 +56,7 @@ class AdminUserController extends Controller
                     'avatar'=>$user->avatar,
                     'role' => $user->role,
                     'status' => $user->status,
+                    'google_id'=>$user->google_id,
                     'created_at' => $user->created_at,
                     'updated_at' => $user->updated_at,
                     'orders' => [
@@ -211,6 +212,7 @@ class AdminUserController extends Controller
                     'phone' => $user->phone,
                     'role' => $user->role,
                     'status' => $user->status,
+                    'google_id'=>$user->google_id,
                     'created_at' => $user->created_at,
                     'updated_at' => $user->updated_at,
                     'orders' => [
@@ -249,7 +251,7 @@ class AdminUserController extends Controller
                 'firstname' => 'sometimes|string|between:2,100',
                 'lastname' => 'sometimes|string|between:2,100',
                 'email' => 'sometimes|string|email|max:100|unique:users,email,'.$id,
-                'phone' => 'sometimes|string|max:20',
+                'phone' => 'sometimes|nullable|string|max:20',
                 'role' => 'sometimes|string|in:customer,admin,staff',
                 'status' => 'sometimes|string|in:active,suspended',
             ]);

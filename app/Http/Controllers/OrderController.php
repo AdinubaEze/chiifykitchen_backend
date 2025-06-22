@@ -3,11 +3,11 @@
 namespace App\Http\Controllers;
  
 use App\Http\Requests\UpdateOrderRequest;
-use App\Http\Resources\OrderResource;
-use App\Models\DeliveryFeeSetting;
+use App\Http\Resources\OrderResource; 
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\Product;
+use App\Models\Setting;
 use App\Models\Table;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -15,27 +15,53 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;    
-use Illuminate\Validation\Rule;  
-
+use Illuminate\Validation\Rule;   
 
 class OrderController extends Controller
 {
     public function __construct()
     {
-        $this->middleware('auth:api')->except(['index','show']);
-        // $this->middleware('role:admin')->only(['index', 'update']);
+        $this->middleware('auth:api')->except(['index','show']); 
     } 
 
     public function index(Request $request)
     {
-        try { 
+        try {
             $query = Order::with(['user', 'address', 'table', 'items.product']);
     
-            // Customer can only see their own orders
-            if ($request->user()->role === User::ROLE_CUSTOMER) {
-                $query->where('user_id', $request->user()->id);
-            } 
-            
+            // Handle user_id parameter if provided
+            if ($request->has('user_id')) {
+                $requestedUserId = $request->input('user_id');
+                
+                // Allow users to only view their own orders unless they're admin
+                if ($request->user() && 
+                    ($request->user()->id == $requestedUserId || 
+                     $request->user()->role === User::ROLE_ADMIN)) {
+                    $query->where('user_id', $requestedUserId);
+                } else {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'You can only view your own orders'
+                    ], 403);
+                }
+            }
+            // If no user_id parameter but user is authenticated
+            elseif ($request->user()) {
+                // Admins see all orders when no user_id is specified
+                if ($request->user()->role !== User::ROLE_ADMIN) {
+                    $query->where('user_id', $request->user()->id);
+                }
+                // For admin, no additional where clause is added - they see all orders
+            }
+            // If no authentication and no user_id parameter
+            else {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Authentication required or user_id parameter needed'
+                ], 401);
+            }
+    
+            // Status filter
             if ($request->has('status')) {
                 $status = $request->input('status');
                 if (in_array($status, [
@@ -61,8 +87,8 @@ class OrderController extends Controller
                 });
             }
     
-            // Pagination with sensible defaults
-            $perPage = min($request->per_page ?? 15, 100); // Max 100 items per page
+            // Pagination
+            $perPage = min($request->per_page ?? 15, 100);
             $orders = $query->latest()->paginate($perPage);
     
             return response()->json([
@@ -83,7 +109,7 @@ class OrderController extends Controller
                 'error' => config('app.debug') ? $e->getMessage() : null
             ], 500);
         }
-    }
+    } 
 
     public function store(Request $request)
     {
@@ -156,7 +182,8 @@ class OrderController extends Controller
     
             $deliveryFee = 0;
             if (in_array($request->delivery_method, [Order::DELIVERY_METHOD_DELIVERY, Order::DELIVERY_METHOD_COURIER])) {
-                $deliveryFee = DeliveryFeeSetting::getFeeForType($request->delivery_method);
+                $settings = Setting::first();
+                $deliveryFee = $settings->general_settings['delivery_fee'] ?? 0;
             }
             $total = $subtotal + $deliveryFee;
     
@@ -177,21 +204,16 @@ class OrderController extends Controller
             ]);
     
             $order->items()->createMany($items);
-
-
-            // Automatically create payment record for non-cash payments
-            // $payment = null;
-            // if ($request->payment_method !== 'cash') {
-                $payment = Payment::create([
-                    'order_id' => $order->id,
-                    'payment_id' => 'PAY-' . strtoupper(uniqid()),
-                    'amount' => $total,
-                    'payment_method' => $request->payment_method,
-                    'status' => $request->payment_method === 'cash' 
-                    ? Order::PAYMENT_STATUS_PENDING 
-                    : Order::PAYMENT_STATUS_UNPAID,
-                ]);
-            // }
+    
+            $payment = Payment::create([
+                'order_id' => $order->id,
+                'payment_id' => 'PAY-' . strtoupper(uniqid()),
+                'amount' => $total,
+                'payment_method' => $request->payment_method,
+                'status' => $request->payment_method === 'cash' 
+                ? Order::PAYMENT_STATUS_PENDING 
+                : Order::PAYMENT_STATUS_UNPAID,
+            ]);
     
             if ($request->table_id) {
                 Table::where('id', $request->table_id)->update(['status' => Table::STATUS_OCCUPIED]);
@@ -213,7 +235,7 @@ class OrderController extends Controller
                 'error' => $e->getMessage()
             ], 500);
         }
-    }
+    } 
 
     public function show($orderId)
     {
@@ -282,12 +304,14 @@ class OrderController extends Controller
                         break;
                         
                     case Order::STATUS_CANCELLED:
+                        $updates['cancelled_by_customer'] = false;
+                        $updates['customer_cancelled_at'] = null;
                         if ($order->payment_status === Order::PAYMENT_STATUS_PAID) {
-                            $updates['payment_status'] = Order::PAYMENT_STATUS_REFUNDED;
+                            /* $updates['payment_status'] = Order::PAYMENT_STATUS_REFUNDED;
                             // Update related payment if exists
                             if ($payment = $order->payment) {
                                 $payment->update(['status' => Payment::STATUS_REFUNDED]);
-                            }
+                            } */
                         }
                         break;
                         
@@ -336,5 +360,72 @@ class OrderController extends Controller
         }
     } 
  
+
+    public function customerCancelOrder(Request $request, $orderId)
+    {
+        DB::beginTransaction();
+    
+        try {
+            $order = Order::find($orderId);
+            
+            if (!$order) {
+                return response()->json([
+                    'status' => 'fail',
+                    'message' => 'Order not found'
+                ], 404);
+            }
+    
+            if ($order->user_id !== $request->user()->id) {
+                return response()->json([
+                    'status' => 'fail',
+                    'message' => 'You can only cancel your own orders'
+                ], 403);
+            }
+    
+            if ($order->status !== Order::STATUS_PENDING) {
+                return response()->json([
+                    'status' => 'fail',
+                    'message' => 'Order can only be cancelled while in pending status'
+                ], 400);
+            }
+    
+            $order->update([
+                'status' => Order::STATUS_CANCELLED,
+                // 'payment_status' => Order::PAYMENT_STATUS_REFUNDED,
+                'cancelled_by_customer' => true,
+                'customer_cancelled_at' => now(),
+            ]);
+    
+            if ($order->payment) {
+                $order->payment->update(['status' => Payment::STATUS_REFUNDED]);
+            }
+    
+            if ($order->table_id) {
+                Table::where('id', $order->table_id)->update(['status' => Table::STATUS_AVAILABLE]);
+            }
+    
+            DB::commit();
+    
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Order has been cancelled successfully',
+                'data' => new OrderResource($order->fresh()->load(['user', 'address', 'table', 'items.product']))
+            ]);
+    
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Order cancellation failed: ' . $e->getMessage(), [
+                'order_id' => $orderId,
+                'user_id' => $request->user()->id,
+                'error' => $e->getTraceAsString()
+            ]);
+    
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to cancel order',
+                'error' => config('app.debug') ? $e->getMessage() : null
+            ], 500);
+        }
+    }
   
 }

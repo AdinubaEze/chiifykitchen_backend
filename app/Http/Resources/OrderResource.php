@@ -12,6 +12,8 @@ class OrderResource extends JsonResource
             'id' => $this->id,
             'order_id' => $this->order_id,
             'status' => $this->status,
+            'cancelled_by_customer'=>$this->cancelled_by_customer,
+            'customer_cancelled_at'=>$this->customer_cancelled_at,
             'user' => new UserResource($this->whenLoaded('user')),
             'address' => new AddressResource($this->whenLoaded('address')),
             'table' => new TableResource($this->whenLoaded('table')),

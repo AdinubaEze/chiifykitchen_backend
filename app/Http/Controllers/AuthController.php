@@ -143,6 +143,13 @@ class AuthController extends Controller
     
             // Get the authenticated user
             $user = auth()->user();
+            if ($user->status === User::STATUS_SUSPENDED) {
+               return response()->json([
+                   'message' => 'Your account has been suspended. Please contact support.',
+                   'status' => 'fail',
+                   'suspended' => true
+               ], 403);
+            }
       
             // Check if non-Google user has verified email
             if (is_null($user->google_id)) {

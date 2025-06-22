@@ -9,8 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CategoryController;
-use App\Http\Controllers\DashboardController;
-use App\Http\Controllers\DeliveryFeeController;
+use App\Http\Controllers\DashboardController; 
 use App\Http\Controllers\OrderController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\ProductController;
@@ -115,9 +114,14 @@ Route::group([
 });
 
 //Products
+Route::get('/products/get-by-ids', [ProductController::class,'getProductsByIds']);
 Route::group(['prefix' => 'products'], function () {
     Route::get('/', [ProductController::class, 'index']);
     Route::get('/{id}', [ProductController::class, 'show']); 
+    Route::get('/{id}/related', [ProductController::class, 'getRelatedProducts']);
+
+    
+
     Route::middleware(['auth:api', 'role:admin'])->group(function () {
         Route::post('/', [ProductController::class, 'store']);
         Route::post('/update/{id}', [ProductController::class, 'update']);
@@ -144,14 +148,17 @@ Route::group(['prefix' => 'tables'], function () {
 
 
 
-Route::group([
-    // 'middleware'=>'auth:api',
+Route::group([ 
     'prefix'=>'orders'
 ],function(){
+    
     // Customer routes
     Route::get('/', [OrderController::class, 'index'])->middleware('role:customer');
     Route::post('/', [OrderController::class, 'store'])->middleware('role:customer');
     Route::get('/{order}', [OrderController::class, 'show']); 
+    
+    Route::post('/{order}/cancel', [OrderController::class, 'customerCancelOrder']) 
+    ->name('orders.customer-cancel');
     
     Route::middleware(['role:admin'])->group(function () { 
         // Admin routes
@@ -166,6 +173,7 @@ Route::group([
  
 Route::post('/payments/initiate', [PaymentController::class, 'initiatePayment']);
 Route::post('/payments/verify', [PaymentController::class, 'verifyPayment']);
+
 Route::middleware('auth:api')->group(function () {
     // Payment routes
     Route::prefix('payments')->group(function () {
@@ -179,16 +187,16 @@ Route::middleware('auth:api')->group(function () {
 
 // Admin settings
 Route::group([
-    'prefix' => 'admin'
+    'prefix' => 'settings'
 ], function () { 
-    Route::get('/settings', [SettingsController::class, 'index']);
+    Route::get('/', [SettingsController::class, 'index']);
     Route::group([
         'middleware' => ['auth:api', 'role:admin'],
     ], function(){
-        Route::post('/settings', [SettingsController::class, 'update']);
-        Route::post('/settings/payment-gateways/{id}/toggle', [SettingsController::class, 'togglePaymentGateway']);
-        Route::post('/settings/upload-company-logo', [SettingsController::class, 'uploadCompanyLogo']);
-        Route::post('/settings/upload-gateway-logo/{gatewayId}', [SettingsController::class, 'uploadGatewayLogo']);
+        Route::post('/', [SettingsController::class, 'update']);
+        Route::post('/payment-gateways/{id}/toggle', [SettingsController::class, 'togglePaymentGateway']);
+        Route::post('/upload-company-logo', [SettingsController::class, 'uploadCompanyLogo']);
+        Route::post('/upload-gateway-logo/{gatewayId}', [SettingsController::class, 'uploadGatewayLogo']);
 
     });
 });

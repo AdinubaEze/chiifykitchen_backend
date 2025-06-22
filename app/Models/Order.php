@@ -40,7 +40,9 @@ class Order extends Model
         'payment_method',
         'delivery_method',
         'payment_status',
-        'status'
+        'status',
+        'cancelled_by_customer',
+        'customer_cancelled_at',
     ];
 
     protected $casts = [

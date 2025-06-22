@@ -4,16 +4,17 @@ namespace App\Http\Controllers;
 
 use App\Models\Payment;
 use App\Models\Order;
+use App\Models\Setting;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Log; 
 
 class PaymentController extends Controller
 {
     public function __construct()
     {
         $this->middleware('auth:api');
-        $this->middleware('role:admin')->except(['index', 'show']);
+        $this->middleware('role:admin')->except(['index', 'show','verifyPayment']);
     }
 
     public function index(Request $request)
@@ -91,45 +92,8 @@ class PaymentController extends Controller
         }
     }
 
-    /* public function update(Request $request, Payment $payment)
-    {
-        $request->validate([
-            'status' => 'required|in:pending,successful,failed,refunded',
-            'reference' => 'nullable|string|max:255',
-        ]);
-
-        DB::beginTransaction();
-
-        try {
-            $payment->update([
-                'status' => $request->status,
-                'reference' => $request->reference ?? $payment->reference,
-                'verified_at' => $request->status === 'successful' ? now() : null
-            ]);
-
-            // Update order payment status if payment status changes
-            if ($payment->wasChanged('status')) {
-                $payment->order->update([
-                    'payment_status' => $this->mapPaymentStatusToOrderStatus($request->status)
-                ]);
-            }
-
-            DB::commit();
-
-            return response()->json([
-                'status' => 'success',
-                'message' => 'Payment updated successfully',
-                'data' => $payment
-            ]);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error('Failed to update payment: ' . $e->getMessage());
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Failed to update payment'
-            ], 500);
-        }
-    } */
+    
+ 
  
     public function update(Request $request, Payment $payment)
     {
@@ -268,72 +232,219 @@ class PaymentController extends Controller
         }
     }
 
+    
+    private function verifyPaystackPayment($reference, $orderId)
+    {
+        try {
+            // 1. Get settings and payment gateway config
+            $settings = Setting::first();
+            if (!$settings) {
+                throw new \Exception('Settings not found');
+            }
+    
+            $paystackConfig = collect($settings->payment_gateways)
+                ->firstWhere('id', 'paystack');
+    
+            if (!$paystackConfig) {
+                throw new \Exception('Paystack configuration not found');
+            }
+    
+            // 2. Check if Paystack is enabled
+            if (empty($paystackConfig['enabled'])) {
+                throw new \Exception('Paystack payment gateway is disabled');
+            }
+    
+            // 3. Get the correct secret key based on transaction mode
+            $secretKey = $settings->transaction_mode === 'test'
+                ? $paystackConfig['secret_test_key']
+                : $paystackConfig['secret_key'];
+    
+            if (empty($secretKey)) {
+                $mode = $settings->transaction_mode === 'test' ? 'test' : 'live';
+                throw new \Exception("Paystack {$mode} secret key is not configured");
+            }
+    
+            // 4. Verify the transaction
+            $url = "https://api.paystack.co/transaction/verify/" . rawurlencode($reference);
+    
+            $client = new \GuzzleHttp\Client();
+            $response = $client->request('GET', $url, [
+                'headers' => [
+                    'Authorization' => "Bearer {$secretKey}",
+                    'Content-Type' => 'application/json',
+                ],
+                'http_errors' => false // Don't throw exceptions for HTTP errors
+            ]);
+    
+            // 5. Handle response
+            $statusCode = $response->getStatusCode();
+            $responseBody = json_decode($response->getBody(), true);
+    
+            if ($statusCode !== 200) {
+                throw new \Exception($responseBody['message'] ?? 'Paystack API request failed');
+            }
+    
+            // 6. Validate the transaction
+            $order = Order::findOrFail($orderId);
+    
+            if ($responseBody['status'] !== true || 
+                $responseBody['data']['status'] !== 'success') {
+                throw new \Exception('Transaction not successful');
+            }
+    
+            // Convert amount to kobo (Paystack uses kobo)
+            $amountPaid = $responseBody['data']['amount'];
+            $orderAmount = $order->total * 100;
+    
+            if ($amountPaid < $orderAmount) {
+                throw new \Exception('Amount paid is less than order total');
+            }
+    
+            return true;
+    
+        } catch (\Exception $e) {
+            Log::error('Paystack verification failed', [
+                'order_id' => $orderId,
+                'reference' => $reference,
+                'error' => $e->getMessage(),
+                'transaction_mode' => Setting::first()->transaction_mode ?? 'unknown',
+                'key'=>$secretKey
+            ]);
+            return false;
+        }
+    }
+    
+    private function verifyFlutterwavePayment($reference, $orderId)
+    {
+        try {
+            // Get settings and payment gateway config
+            $settings = Setting::first(); 
+            if (!$settings) {
+                throw new \Exception('Settings not found');
+            } 
+            
+            $flutterwaveConfig = collect($settings->payment_gateways)
+                ->firstWhere('id', 'flutterwave');
+    
+            if (!$flutterwaveConfig || !$flutterwaveConfig['enabled']) {
+                throw new \Exception('Flutterwave payment gateway is not enabled');
+            }
+    
+            // Use test key if in test mode, live key otherwise
+            $secretKey = $settings->transaction_mode === 'test'
+                ? $flutterwaveConfig['secret_test_key']
+                : $flutterwaveConfig['secret_key'];
+    
+            if (empty($secretKey)) {
+                throw new \Exception('Flutterwave secret key is not configured');
+            }
+    
+            $url = "https://api.flutterwave.com/v3/transactions/{$reference}/verify";
+    
+            $client = new \GuzzleHttp\Client();
+            $response = $client->request('GET', $url, [
+                'headers' => [
+                    'Authorization' => "Bearer {$secretKey}",
+                    'Content-Type' => 'application/json',
+                ]
+            ]);
+    
+            $responseBody = json_decode($response->getBody(), true);
+            $order = Order::findOrFail($orderId);
+    
+            if ($responseBody['status'] === 'success' && 
+                $responseBody['data']['status'] === 'successful' &&
+                $responseBody['data']['amount'] >= $order->total) {
+                return true;
+            }
+    
+            Log::error('Flutterwave verification failed', [
+                'order_id' => $orderId,
+                'reference' => $reference,
+                'response' => $responseBody,
+                'order_total' => $order->total
+            ]);
+            return false;
+    
+        } catch (\Exception $e) {
+            Log::error('Flutterwave verification error: ' . $e->getMessage());
+            return false;
+        }
+    }
+
     public function verifyPayment(Request $request)
     {
-        $request->validate([
-            'payment_id' => 'required|exists:payments,id',
-            'reference' => 'required|string',
-        ]);
-    
-        DB::beginTransaction();
-    
         try {
-            $payment = Payment::findOrFail($request->payment_id);
-            
-            // Verify payment with payment gateway
-            $verificationResult = $this->verifyWithGateway($payment, $request->reference);
-            
-            if ($verificationResult['success']) {
-                $payment->update([
-                    'status' => 'successful',
-                    'reference' => $request->reference,
-                    'verified_at' => now(),
-                    'metadata' => $verificationResult['metadata'] ?? null,
-                ]);
+            $validated = $request->validate([
+                'order_id' => 'required|string',
+                'reference' => 'required|string',
+                'gateway' => 'required|in:paystack,flutterwave,cash'
+            ]);
     
-                $payment->order->update([
+            $order = Order::findOrFail($validated['order_id']);
+            
+            // Find or create the payment record
+            $payment = Payment::firstOrCreate(
+                ['order_id' => $order->id],
+                [
+                    'payment_id' => 'PAY-' . strtoupper(uniqid()),
+                    'amount' => $order->total,
+                    'payment_method' => $validated['gateway'],
+                    'status' => 'pending',
+                ]
+            );
+    
+            // Verify payment with the appropriate gateway
+            $verified = match($validated['gateway']) {
+                'paystack' => $this->verifyPaystackPayment($validated['reference'], $order->id),
+                'flutterwave' => $this->verifyFlutterwavePayment($validated['reference'], $order->id),
+                'cash' => true, // Cash payments are automatically verified
+            };
+    
+            if ($verified) {
+                $order->update([
                     'payment_status' => 'paid',
-                    'status' => 'processing', // Move order to processing after payment
+                    'payment_verified_at' => now(),
                 ]);
     
-                DB::commit();
+                // Update the payment instance (not static call)
+                $payment->update([
+                    'status' => 'paid',
+                    'verified_at' => now(),
+                    'reference' => $validated['reference'],
+                ]);
     
                 return response()->json([
                     'status' => 'success',
-                    'message' => 'Payment verified successfully',
-                    'data' => $payment
+                    'message' => 'Payment verified successfully'
                 ]);
             }
     
-            // If verification failed
-            $payment->update([
-                'status' => 'failed',
-                'reference' => $request->reference,
-                'metadata' => $verificationResult['metadata'] ?? null,
+            // Log failed verification with proper context array
+            Log::error('Payment verification failed', [ 
+                'order_id' => $order->id,
+                'reference' => $validated['reference'],
+                'gateway' => $validated['gateway']
             ]);
-    
-            $payment->order->update([
-                'payment_status' => 'failed',
-            ]);
-    
-            DB::commit();
     
             return response()->json([
-                'status' => 'error',
-                'message' => 'Payment verification failed',
-                'data' => $payment
+                'status' => 'failed',
+                'message' => 'Payment verification failed'
             ], 400);
     
         } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error('Payment verification failed: ' . $e->getMessage());
+            // Log error with proper context array
+            Log::error('Payment verification error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+    
             return response()->json([
                 'status' => 'error',
-                'message' => 'Payment verification failed',
-                'error' => config('app.debug') ? $e->getMessage() : null
+                'message' => 'Payment verification error occurred'
             ], 500);
         }
-    }
- 
+    } 
+
 
 }

@@ -51,6 +51,14 @@ class GoogleAuthController extends Controller
             $message = "Account created successfully";
 
             if ($user) {
+                if ($user->status === User::STATUS_SUSPENDED) {
+                   return response()->json([
+                       'message' => 'Your account has been suspended. Please contact support.',
+                       'status' => 'fail',
+                       'suspended' => true
+                   ], 403);
+                }
+
                 $message = "Your have successfully signed in";
                 // User exists - update without changing avatar
                 $user->update([

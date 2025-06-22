@@ -11,7 +11,8 @@ class Setting extends Model
         'transaction_mode',
         'company_info',
         'notifications',
-        'general_settings'
+        'general_settings',
+        'social_media'
     ];
 
     protected $casts = [
@@ -19,6 +20,7 @@ class Setting extends Model
         'company_info' => 'array',
         'notifications' => 'array',
         'general_settings' => 'array',
+        'social_media' => 'array',
         'created_at' => 'datetime',
         'updated_at' => 'datetime'
     ];
@@ -67,6 +69,16 @@ class Setting extends Model
             "tax_rate": 7.5,
             "delivery_fee": 0,
             "minimum_order_amount": 0
+        }',
+        'social_media' => '{
+            "facebook": null,
+            "linkedin": null,
+            "tiktok": null,
+            "instagram": null,
+            "youtube": null,
+            "x": null,
+            "thread": null,
+            "snapchat": null
         }'
     ];
 }

@@ -15,8 +15,8 @@ class ProductController extends Controller
 {
     public function __construct()
     {
-        $this->middleware('auth:api')->except(['index','show']);
-        $this->middleware('role:admin')->except(['index', 'show']);
+        $this->middleware('auth:api')->except(['index','show','getRelatedProducts','getProductsByIds']);
+        $this->middleware('role:admin')->except(['index', 'show','getRelatedProducts','getProductsByIds']);
     }
  
     public function index(Request $request)
@@ -75,6 +75,46 @@ class ProductController extends Controller
         }
     }
 
+    public function getProductsByIds(Request $request)
+{
+    try { 
+        $validator = Validator::make($request->all(), [
+            'ids' => 'required|array',
+            'ids.*' => 'integer|exists:products,id'
+        ]);
+
+        if ($validator->fails()) {
+            $errors = [];
+            foreach ($validator->errors()->messages() as $field => $messages) {
+                $errors[$field] = $messages[0];
+            }
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $errors
+            ], 422);
+        }
+
+        $productIds = $request->input('ids');
+        $products = Product::with(['category', 'productImages'])
+            ->whereIn('id', $productIds)
+            ->where('status', '!=', Product::STATUS_DELETED)
+            ->get();
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $products
+        ]);
+
+    } catch (\Exception $e) {
+        Log::error('Failed to get products by IDs: ' . $e->getMessage());
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Failed to retrieve products'
+        ], 500);
+    }
+}
+ 
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -151,6 +191,44 @@ class ProductController extends Controller
             return response()->json([
                 'status' => 'error',
                 'message' => 'Failed to retrieve product'
+            ], 500);
+        }
+    }
+
+ 
+    public function getRelatedProducts($id)
+    {
+        try {
+            $product = Product::find($id);
+            
+            if (!$product) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Product not found'
+                ], 404);
+            }
+    
+            $relatedProducts = Product::where('id', '!=', $id)
+                ->where(function($query) use ($product) {
+                    $query->where('category_id', $product->category_id)
+                        ->orWhere('title', 'like', '%'.$product->title.'%')
+                        ->orWhere('description', 'like', '%'.$product->description.'%');
+                })
+                ->where('status', Product::STATUS_ACTIVE)
+                ->with(['category', 'productImages'])
+                ->limit(5) // You can adjust this number
+                ->get();
+    
+            return response()->json([
+                'status' => 'success',
+                'data' => $relatedProducts
+            ]);
+    
+        } catch (\Exception $e) {
+            Log::error('Failed to get related products: ' . $e->getMessage());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to retrieve related products'
             ], 500);
         }
     }
