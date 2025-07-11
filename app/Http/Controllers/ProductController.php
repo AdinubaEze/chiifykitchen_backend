@@ -18,8 +18,86 @@ class ProductController extends Controller
         $this->middleware('auth:api')->except(['index','show','getRelatedProducts','getProductsByIds']);
         $this->middleware('role:admin')->except(['index', 'show','getRelatedProducts','getProductsByIds']);
     }
- 
+
+
     public function index(Request $request)
+    {
+        try {
+            $user = auth()->user();
+            $isAdmin = $user && $user->role === User::ROLE_ADMIN;
+            
+            $query = Product::with(['category', 'productImages', 'admin'])
+                ->when($isAdmin && $request->boolean('with_trashed'),
+                    fn($q) => $q->withTrashed(),
+                    fn($q) => $q->where('status', '!=', Product::STATUS_DELETED)
+                );
+    
+            // Apply search filter
+            if ($request->has('search')) {
+                $search = $request->input('search');
+                $query->where(function($q) use ($search) {
+                    $q->where('title', 'like', "%{$search}%")
+                      ->orWhere('description', 'like', "%{$search}%");
+                });
+            }
+    
+            // Apply status filter
+            if ($request->has('status')) {
+                $status = $request->input('status');
+                if (in_array($status, [Product::STATUS_ACTIVE, Product::STATUS_DISABLED, Product::STATUS_DELETED])) {
+                    $query->where('status', $status);
+                }
+            }
+    
+            // Apply category filter
+            if ($request->has('category_id')) {
+                $categoryId = $request->input('category_id');
+                $query->where('category_id', $categoryId);
+            }
+    
+            // Apply featured filter
+            if ($request->has('is_featured')) {
+                $query->where('is_featured', $request->boolean('is_featured'));
+            }
+    
+            // Handle random ordering with exclusion of previously seen products
+            if ($request->boolean('random')) {
+                // Get excluded IDs from the request
+                $excludeIds = $request->input('exclude_ids', []);
+                
+                if (!empty($excludeIds)) {
+                    if (is_string($excludeIds)) {
+                        $excludeIds = explode(',', $excludeIds);
+                    }
+                    $query->whereNotIn('id', $excludeIds);
+                }
+                
+                $query->inRandomOrder();
+            } else {
+                // Apply regular sorting
+                $sortField = $request->input('sort_by', 'created_at');
+                $sortDirection = $request->input('sort_dir', 'desc');
+                $query->orderBy($sortField, $sortDirection);
+            }
+    
+            $perPage = $request->input('per_page', 15);
+            $products = $query->paginate($perPage);
+    
+            return response()->json([
+                'status' => 'success',
+                'data' => $products,
+            ]);
+    
+        } catch (\Exception $e) {
+            Log::error('Product index failed: ' . $e->getMessage());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to retrieve products. Please try again later.',
+            ], 500);
+        }
+    }
+ 
+    /* public function index(Request $request)
     {
         try {
             $user = auth()->user();
@@ -73,7 +151,7 @@ class ProductController extends Controller
                 'message' => 'Failed to retrieve products because '.$e->getMessage(), 
             ], 500);
         }
-    }
+    } */
 
     public function getProductsByIds(Request $request)
 {
