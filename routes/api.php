@@ -119,11 +119,7 @@ Route::group(['prefix' => 'products'], function () {
     Route::get('/', [ProductController::class, 'index']);
     Route::get('/{id}', [ProductController::class, 'show']); 
     Route::get('/{id}/related', [ProductController::class, 'getRelatedProducts']);
-    Route::post('/clear-seen', function(Request $request) {
-        $request->session()->forget('seen_products');
-        return response()->json(['status' => 'success']);
-    });
-    
+     
 
     Route::middleware(['auth:api', 'role:admin'])->group(function () {
         Route::post('/', [ProductController::class, 'store']);
